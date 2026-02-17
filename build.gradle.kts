@@ -12,6 +12,7 @@ repositories {
     mavenCentral()
 }
 
+
 application {
     mainClass.set("org.endless.Mainkt")
 }
