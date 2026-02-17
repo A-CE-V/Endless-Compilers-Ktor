@@ -14,9 +14,9 @@ import io.ktor.server.routing.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-import org.endless.services.CfrAdapter
-import org.endless.services.JadxAdapter
-import org.endless.services.ProcyonAdapter
+import org.endless.model.DecompileOutcome
+import org.endless.model.toResponseMap
+import org.endless.services.*
 
 import java.io.File
 import java.nio.file.Files
@@ -29,120 +29,189 @@ fun main() {
 }
 
 fun Application.module() {
-    // 1. Install Plugins
-    install(ContentNegotiation) {
-        jackson()
-    }
+
+    // ── Plugins ───────────────────────────────────────────────────────────────
+
+    install(ContentNegotiation) { jackson() }
+
     install(StatusPages) {
+        // Catch-all: anything that bubbles past the route handlers
         exception<Throwable> { call, cause ->
-            call.respond(HttpStatusCode.InternalServerError, mapOf("error" to cause.localizedMessage))
+            call.application.log.error("Unhandled exception", cause)
+            call.respond(
+                HttpStatusCode.InternalServerError,
+                mapOf(
+                    "status"  to "error",
+                    "error"   to "INTERNAL_ERROR",
+                    "message" to (cause.localizedMessage ?: cause.javaClass.simpleName)
+                )
+            )
         }
     }
 
-    // 2. Initialize Services (Singletons)
-    val cfr = CfrAdapter()
-    val procyon = ProcyonAdapter()
-    val jadx = JadxAdapter()
+    // ── Decompiler registry ───────────────────────────────────────────────────
+    // Add / remove adapters here; the registry and routes adapt automatically.
 
-    // 3. Define Routes
+    val registry = DecompilerRegistry(
+        listOf(
+            CfrAdapter(),
+            JadxAdapter(),
+            ProcyonAdapter(),
+            VineflowerAdapter(),
+            JdCoreAdapter()
+        )
+    )
+
+    // ── Routes ────────────────────────────────────────────────────────────────
+
     routing {
+
+        // Health check — useful for Render / Railway keep-alive pings
         get("/health") {
-            call.respond(mapOf("status" to "ok", "engine" to "ktor"))
+            call.respond(mapOf(
+                "status"          to "ok",
+                "decompilers"     to registry.availableDecompilers,
+                "jarDecompilers"  to registry.jarCapableDecompilers
+            ))
         }
 
+        // ── POST /decompile/class ─────────────────────────────────────────────
+        //
+        // Multipart fields:
+        //   file  (required) — the .class file
+        //   mode  (optional, default "cfr") — decompiler name
+        //
         post("/decompile/class") {
-            // Stream multipart data
             val multipart = call.receiveMultipart()
-            var mode = "cfr"
+            var mode      = "cfr"
             var fileBytes: ByteArray? = null
-            var fileName = ""
+            var fileName  = "Unknown.class"
 
             multipart.forEachPart { part ->
-                when (part) {
-                    is PartData.FormItem -> {
-                        if (part.name == "mode") mode = part.value
+                when {
+                    part is PartData.FormItem && part.name == "mode" -> {
+                        mode = part.value.trim()
                     }
-                    is PartData.FileItem -> {
-                        if (part.name == "file") {
-                            fileName = part.originalFileName ?: "Unknown"
-                            // Read bytes into memory (Caution: limit file size in real apps)
-                            fileBytes = part.streamProvider().readBytes()
-                        }
+                    part is PartData.FileItem && part.name == "file" -> {
+                        fileName  = part.originalFileName?.trim()?.ifBlank { "Unknown.class" } ?: "Unknown.class"
+                        fileBytes = part.streamProvider().readBytes()
                     }
-                    else -> part.dispose()
-                }
-            }
-
-            if (fileBytes == null || fileBytes!!.isEmpty()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "No file uploaded"))
-                return@post
-            }
-
-            // Move heavy work to IO thread to keep server responsive
-            val result = withContext(Dispatchers.IO) {
-                try {
-                    val source = when (mode.lowercase()) {
-                        "procyon" -> procyon.decompileClass(fileBytes!!, fileName)
-                        "jadx" -> jadx.decompileClass(fileBytes!!)
-                        else -> cfr.decompileClass(fileBytes!!, fileName) // Default CFR
-                    }
-                    mapOf("status" to "success", "mode" to mode, "source" to source)
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    mapOf("status" to "error", "message" to e.message)
-                }
-            }
-
-            call.respond(result)
-        }
-
-        post("/decompile/jar") {
-            val multipart = call.receiveMultipart()
-            var jarBytes: ByteArray? = null
-
-            multipart.forEachPart { part ->
-                if (part is PartData.FileItem && part.name == "file") {
-                    jarBytes = part.streamProvider().readBytes()
                 }
                 part.dispose()
             }
 
-            if (jarBytes == null) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "No JAR file provided"))
+            // ── Validate ──────────────────────────────────────────────────────
+            val bytes = fileBytes
+            if (bytes == null || bytes.isEmpty()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf(
+                    "status" to "error", "error" to "MISSING_FILE",
+                    "message" to "No file was uploaded. Send the .class file as a multipart field named 'file'."
+                ))
                 return@post
             }
 
-            val zipFile = withContext(Dispatchers.IO) {
-                val tempJar = File.createTempFile("input-", ".jar").apply { writeBytes(jarBytes!!) }
-                val outDir = Files.createTempDirectory("out-").toFile()
-                val resultZip = File.createTempFile("decompiled-", ".zip")
+            registry.validateMode(mode)?.let { err ->
+                call.respond(HttpStatusCode.BadRequest, err.toResponseMap()); return@post
+            }
+            registry.validateClassBytes(bytes, mode)?.let { err ->
+                call.respond(HttpStatusCode.UnprocessableEntity, err.toResponseMap()); return@post
+            }
 
-                // 1. Decompile
-                jadx.decompileJar(tempJar, outDir)
+            // ── Decompile (IO thread) ─────────────────────────────────────────
+            val outcome = withContext(Dispatchers.IO) {
+                registry.runClass(mode, bytes, fileName)
+            }
 
-                // 2. Zip the output directory
-                ZipOutputStream(resultZip.outputStream()).use { zos ->
+            val statusCode = if (outcome is DecompileOutcome.Failure) HttpStatusCode.InternalServerError
+                             else HttpStatusCode.OK
+            call.respond(statusCode, outcome.toResponseMap())
+        }
+
+        // ── POST /decompile/jar ───────────────────────────────────────────────
+        //
+        // Multipart fields:
+        //   file  (required) — the .jar file
+        //   mode  (optional, default "jadx") — decompiler name; must support JARs
+        //
+        post("/decompile/jar") {
+            val multipart = call.receiveMultipart()
+            var mode      = "jadx"
+            var jarBytes: ByteArray? = null
+
+            multipart.forEachPart { part ->
+                when {
+                    part is PartData.FormItem && part.name == "mode" -> {
+                        mode = part.value.trim()
+                    }
+                    part is PartData.FileItem && part.name == "file" -> {
+                        jarBytes = part.streamProvider().readBytes()
+                    }
+                }
+                part.dispose()
+            }
+
+            // ── Validate ──────────────────────────────────────────────────────
+            val bytes = jarBytes
+            if (bytes == null || bytes.isEmpty()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf(
+                    "status" to "error", "error" to "MISSING_FILE",
+                    "message" to "No file was uploaded. Send the .jar file as a multipart field named 'file'."
+                ))
+                return@post
+            }
+
+            registry.validateMode(mode, requiresJar = true)?.let { err ->
+                call.respond(HttpStatusCode.BadRequest, err.toResponseMap()); return@post
+            }
+            registry.validateJarBytes(bytes, mode)?.let { err ->
+                call.respond(HttpStatusCode.UnprocessableEntity, err.toResponseMap()); return@post
+            }
+
+            // ── Decompile → Zip (IO thread) ───────────────────────────────────
+            val (zipFile, outcome) = withContext(Dispatchers.IO) {
+                val tempJar = File.createTempFile("jar-in-", ".jar").apply { writeBytes(bytes) }
+                val outDir  = Files.createTempDirectory("jar-out-").toFile()
+                val zipFile = File.createTempFile("sources-", ".zip")
+
+                val outcome = registry.runJar(mode, tempJar, outDir)
+
+                // Zip the output regardless; include a warnings.txt if any were captured
+                ZipOutputStream(zipFile.outputStream().buffered()).use { zos ->
+                    if (outcome is DecompileOutcome.Success) {
+                        val msgs = outcome.result.warnings + outcome.result.errors
+                        if (msgs.isNotEmpty()) {
+                            zos.putNextEntry(ZipEntry("DECOMPILER_WARNINGS.txt"))
+                            zos.write(msgs.joinToString("\n").toByteArray())
+                            zos.closeEntry()
+                        }
+                    }
                     outDir.walkTopDown().filter { it.isFile }.forEach { file ->
-                        val zipEntry = ZipEntry(file.relativeTo(outDir).path)
-                        zos.putNextEntry(zipEntry)
-                        file.inputStream().copyTo(zos)
+                        zos.putNextEntry(ZipEntry(file.relativeTo(outDir).path))
+                        file.inputStream().use { it.copyTo(zos) }
                         zos.closeEntry()
                     }
                 }
 
-                // Cleanup temp files
                 tempJar.delete()
                 outDir.deleteRecursively()
-                resultZip
+                Pair(zipFile, outcome)
             }
 
+            if (outcome is DecompileOutcome.Failure) {
+                zipFile.delete()
+                call.respond(HttpStatusCode.InternalServerError, outcome.toResponseMap())
+                return@post
+            }
+
+            // Stream zip back to the caller then delete the temp file
             call.response.header(
                 HttpHeaders.ContentDisposition,
-                ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, "sources.zip").toString()
+                ContentDisposition.Attachment
+                    .withParameter(ContentDisposition.Parameters.FileName, "sources-$mode.zip")
+                    .toString()
             )
             call.respondFile(zipFile)
+            zipFile.delete()
         }
     }
-
-
 }

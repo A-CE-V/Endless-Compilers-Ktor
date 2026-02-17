@@ -9,6 +9,7 @@ group = "org.endless-forge"
 version = "1.0-SNAPSHOT"
 
 repositories {
+    mavenLocal()
     mavenCentral()
 }
 
@@ -25,12 +26,17 @@ dependencies {
     implementation("io.ktor:ktor-serialization-jackson-jvm") // For JSON responses
     implementation("io.ktor:ktor-server-status-pages-jvm") // Error handling
     implementation("ch.qos.logback:logback-classic:1.4.14") // Logging
+    implementation("org.vineflower:vineflower:1.10.1")
 
-    // --- Decompilers (Same as your old POM) ---
+    // --- Decompilers
     implementation("org.benf:cfr:0.152")
     implementation("org.bitbucket.mstrobel:procyon-compilertools:0.6.0")
     implementation("io.github.skylot:jadx-core:1.5.3")
     implementation("io.github.skylot:jadx-java-input:1.5.3")
+    implementation("org.vineflower:vineflower:1.11.2")
+    // Source: https://mvnrepository.com/artifact/org.jd/jd-core
+    //implementation("org.jd:jd-core:1.1.3")
+    implementation("io.github.nbauma109:jd-core:1.3.3")
 
     // --- Utils ---
     implementation("commons-io:commons-io:2.11.0")
