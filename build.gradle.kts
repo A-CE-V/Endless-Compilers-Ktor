@@ -13,7 +13,7 @@ repositories {
 }
 
 application {
-    mainClass.set("org.endless.Mainkt")
+    mainClass.set("org.endless.MainKt")
 }
 
 dependencies {

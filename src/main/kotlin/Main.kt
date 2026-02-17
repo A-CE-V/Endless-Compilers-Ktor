@@ -18,6 +18,11 @@ import org.endless.services.CfrAdapter
 import org.endless.services.JadxAdapter
 import org.endless.services.ProcyonAdapter
 
+import java.io.File
+import java.nio.file.Files
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+
 fun main() {
     embeddedServer(Netty, port = 8080, host = "0.0.0.0", module = Application::module)
         .start(wait = true)
@@ -90,5 +95,54 @@ fun Application.module() {
 
             call.respond(result)
         }
+
+        post("/decompile/jar") {
+            val multipart = call.receiveMultipart()
+            var jarBytes: ByteArray? = null
+
+            multipart.forEachPart { part ->
+                if (part is PartData.FileItem && part.name == "file") {
+                    jarBytes = part.streamProvider().readBytes()
+                }
+                part.dispose()
+            }
+
+            if (jarBytes == null) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "No JAR file provided"))
+                return@post
+            }
+
+            val zipFile = withContext(Dispatchers.IO) {
+                val tempJar = File.createTempFile("input-", ".jar").apply { writeBytes(jarBytes!!) }
+                val outDir = Files.createTempDirectory("out-").toFile()
+                val resultZip = File.createTempFile("decompiled-", ".zip")
+
+                // 1. Decompile
+                jadx.decompileJar(tempJar, outDir)
+
+                // 2. Zip the output directory
+                ZipOutputStream(resultZip.outputStream()).use { zos ->
+                    outDir.walkTopDown().filter { it.isFile }.forEach { file ->
+                        val zipEntry = ZipEntry(file.relativeTo(outDir).path)
+                        zos.putNextEntry(zipEntry)
+                        file.inputStream().copyTo(zos)
+                        zos.closeEntry()
+                    }
+                }
+
+                // Cleanup temp files
+                tempJar.delete()
+                outDir.deleteRecursively()
+                resultZip
+            }
+
+            call.response.header(
+                HttpHeaders.ContentDisposition,
+                ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, "sources.zip").toString()
+            )
+            call.respondFile(zipFile)
+        }
     }
+
+
 }

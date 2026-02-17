@@ -28,4 +28,17 @@ class JadxAdapter {
             tmp.delete()
         }
     }
+
+    fun decompileJar(jarFile: File, outputDir: File) {
+        val args = JadxArgs().apply {
+            inputFiles.add(jarFile)
+            outDir = outputDir // Jadx will recreate the package structure here
+            isSkipResources = true
+            threadsCount = 1 // Keeps Render from crashing
+        }
+        JadxDecompiler(args).use { jadx ->
+            jadx.load()
+            jadx.save() // This writes all .java files to the disk
+        }
+    }
 }
