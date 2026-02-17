@@ -1,25 +1,22 @@
-# Stage 1: Build the Application
+# Stage 1: Build
 FROM gradle:8.5-jdk17 AS build
 WORKDIR /app
-COPY --chown=gradle:gradle . /app
-# Skip tests to save build time
-RUN gradle build --no-daemon -x test
+# Copy the gradle files first to cache dependencies
+COPY build.gradle.kts settings.gradle.kts ./
+COPY src ./src
+# Build the Fat JAR (shadowJar)
+RUN gradle shadowJar --no-daemon
 
-# Stage 2: Runtime Image (Small & Fast)
+# Stage 2: Runtime
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 
-# Copy the Fat Jar (Shadow Jar) or standard Jar
-# Ktor usually outputs to build/libs/
+# Look for the file ending in -all.jar
 COPY --from=build /app/build/libs/*-all.jar app.jar
-# OR if not using shadow plugin: COPY --from=build /app/build/libs/java-decompiler-ktor-0.0.1.jar app.jar
 
-# Copy tools if you still have external binaries
-# COPY tools ./tools
-
+# Koyeb uses 8080 by default
 EXPOSE 8080
 
-# MEMORY TUNING FOR FREE TIER
-# -Xmx300m: Gives 200MB headroom for the OS
-# -XX:+UseSerialGC: The most efficient GC for single-core/low-RAM
-ENTRYPOINT ["java", "-Xmx300m", "-XX:+UseSerialGC", "-jar", "app.jar"]
+# MEMORY TUNING (Crucial for 512MB Free Tier)
+# We use -Xmx350m to leave room for the Alpine OS and Decompiler overhead
+ENTRYPOINT ["java", "-Xmx350m", "-XX:+UseSerialGC", "-jar", "app.jar"]
