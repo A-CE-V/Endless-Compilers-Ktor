@@ -40,7 +40,7 @@ dependencies {
 
     // --- Utils ---
     implementation("commons-io:commons-io:2.11.0")
-
+    implementation("io.ktor:ktor-server-double-receive:2.3.12")
     testImplementation(kotlin("test"))
 }
 
