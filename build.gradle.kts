@@ -25,7 +25,7 @@ dependencies {
     implementation("io.ktor:ktor-server-content-negotiation-jvm")
     implementation("io.ktor:ktor-serialization-jackson-jvm") // For JSON responses
     implementation("io.ktor:ktor-server-status-pages-jvm") // Error handling
-    implementation("ch.qos.logback:logback-classic:1.4.14") // Logging
+    implementation("ch.qos.logback:logback-classic:1.5.18") // Logging
     implementation("org.vineflower:vineflower:1.10.1")
 
     // --- Decompilers
@@ -39,7 +39,7 @@ dependencies {
     implementation("io.github.nbauma109:jd-core:1.3.3")
 
     // --- Utils ---
-    implementation("commons-io:commons-io:2.11.0")
+    implementation("commons-io:commons-io:2.20.0")
     implementation("io.ktor:ktor-server-double-receive:2.3.12")
     testImplementation(kotlin("test"))
 }

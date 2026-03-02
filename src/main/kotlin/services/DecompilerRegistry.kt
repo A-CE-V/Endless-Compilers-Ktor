@@ -9,8 +9,8 @@ private val CLASS_MAGIC = byteArrayOf(0xCA.toByte(), 0xFE.toByte(), 0xBA.toByte(
 private val JAR_MAGIC   = byteArrayOf(0x50, 0x4B, 0x03, 0x04)   // PK\x03\x04
 
 // ── Size limits ───────────────────────────────────────────────────────────────
-private const val MAX_CLASS_BYTES = 10L * 1024 * 1024   //  10 MB per .class
-private const val MAX_JAR_BYTES   = 200L * 1024 * 1024  // 200 MB per JAR
+private const val MAX_CLASS_BYTES = 1L * 1024 * 1024   //  10 MB per .class
+private const val MAX_JAR_BYTES   = 1L * 1024 * 1024  // 200 MB per JAR
 
 /**
  * Central registry that maps mode strings → [DecompilerAdapter] and performs
